@@ -7,14 +7,16 @@ LCD1602 顯示器
 
 MPU6050(速度)→ Arduino → 繼電器 → 線性致動器 →輔助輪（升降）
 
-MPU6050(傾斜)→ Arduino → 判斷傾斜 → 蜂鳴器 → 繼電器 → 線性致動器 → 輔助輪（升降）
-
-LCD1602 → Arduino → 顯示速度
-
-OLED → Arduino → 顯示（？）
+MPU6050(傾斜)→ Arduino → 判斷傾斜 → 蜂鳴器 →
 
 紅外線控制器（遙控器） → arduino接收到訊號 → 繼電器 → 線性致動器向下
 
+LCD1602 → Arduino → 顯示速度
+
+OLED → Arduino → 顯示（即時狀況提醒）
+［搭配進度條］
+
+超音波感測器  → Arduino  → 蜂鳴器  → 
 
 功能 A：測量速度（速度 → 積分 → 速度）
  → 透過 I2C 傳輸數據到 Arduino
