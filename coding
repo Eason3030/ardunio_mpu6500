@@ -1,0 +1,220 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <LiquidCrystal_PCF8574.h>
+
+// MPU 配置
+#define MPU_6050 0x68
+#define PWR_MGMT_1 0x6B    // 控制電源管理的暫存器
+#define ACCEL_XOUT_H 0x3B  // 加速度資料暫存器
+#define GYRO_XOUT_H  0x43  // 陀螺儀資料暫存器
+#define MPU_ADDR 0x68
+
+// 設定OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// LCD I2C 地址（如有）
+LiquidCrystal_PCF8574 lcd(0x27);
+
+// PIN設定
+const int BUZZER_PIN = 8;
+const int MOTOR_PIN_A = 9;
+const int MOTOR_PIN_B = 10;
+const int RELAY_PIN = 11;
+const int IR_PIN = 2; // 紅外線接收器模組
+
+unsigned long lastMicros = 0;
+float dt = 0.01f;
+
+// thresholds & params
+const float TILT_THRESHOLD = 25.0f;  // deg
+const float alpha = 0.98f;           // 互補濾波係數
+
+// state
+float velX = 0.0f;   // m/s (非常粗略示範)
+float compAngleX = 0.0f;
+float gyroAngleX = 0.0f;
+float accelBiasX = 0.0f;  // g
+float gyroBiasX = 0.0f;   // dps
+
+// ---------- helper: I2C 讀 MPU bytes ----------
+void mpuReadBytes(uint8_t reg, uint8_t count, uint8_t* dest) {
+  Wire.beginTransmission(MPU_6050);
+  Wire.write(reg);
+  // restart（false）表示保留連線以讀取
+  Wire.endTransmission(false);
+  Wire.requestFrom((uint8_t)MPU_6050, (uint8_t)count);
+  uint8_t i = 0;
+  while (Wire.available() && i < count) {
+    dest[i++] = Wire.read();
+  }
+  // 若讀不到預期數量，剩下填 0（保險）
+  while (i < count) dest[i++] = 0;
+}
+int16_t read16(uint8_t reg) {
+  uint8_t buf[2];
+  mpuReadBytes(reg, 2, buf);
+  return (int16_t)((buf[0] << 8) | buf[1]);
+}
+
+// ---------- 初始化 MPU（喚醒） ----------
+void setupMPU() {
+  Wire.beginTransmission(MPU_6050);
+  Wire.write(PWR_MGMT_1);
+  Wire.write(0x00);  // wake up
+  Wire.endTransmission();
+  delay(50);
+}
+
+// ---------- IMU 校準（取平均） ----------
+void calibrateIMU(unsigned int samples = 200) {
+  float sumAx = 0.0f;
+  float sumGx = 0.0f;
+  for (unsigned int i = 0; i < samples; ++i) {
+    int16_t rawAx = read16(ACCEL_XOUT_H);
+    int16_t rawGx = read16(GYRO_XOUT_H);
+    float ax_g = rawAx / 16384.0f;
+    float gx_dps = rawGx / 131.0f;
+    sumAx += ax_g;
+    sumGx += gx_dps;
+    delay(5);
+  }
+  accelBiasX = sumAx / samples;   // 單軸示範（視需求可擴展到三軸）
+  gyroBiasX = sumGx / samples;
+  // 若在靜止且 Z 軸承受重力，accelBiasX 可能接近 0（視姿勢而定）
+}
+
+// ---------- 讀 IMU 並轉單位 ----------
+void readIMU(float &ax_g, float &ay_g, float &az_g, float &gx_dps, float &gy_dps, float &gz_dps) {
+  int16_t rawAx = read16(ACCEL_XOUT_H);
+  int16_t rawAy = read16(ACCEL_XOUT_H + 2);
+  int16_t rawAz = read16(ACCEL_XOUT_H + 4);
+  int16_t rawGx = read16(GYRO_XOUT_H);
+  int16_t rawGy = read16(GYRO_XOUT_H + 2);
+  int16_t rawGz = read16(GYRO_XOUT_H + 4);
+
+  ax_g = rawAx / 16384.0f;
+  ay_g = rawAy / 16384.0f;
+  az_g = rawAz / 16384.0f;
+  gx_dps = rawGx / 131.0f;
+  gy_dps = rawGy / 131.0f;
+  gz_dps = rawGz / 131.0f;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();        // I2C 初始化（只需一次）
+  setupMPU();
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(MOTOR_PIN_A, OUTPUT);
+  pinMode(MOTOR_PIN_B, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(IR_PIN, INPUT);
+
+  // OLED init
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED init failed");
+    while (1);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  lcd.begin(16, 2);
+  lcd.setBacklight(1);
+
+  // 校準 IMU（啟動時靜置）
+  Serial.println("Calibrating IMU... keep device still");
+  calibrateIMU(300);
+  Serial.print("accelBiasX(g)= ");
+  Serial.println(accelBiasX, 6);
+  Serial.print("gyroBiasX(dps)= ");
+  Serial.println(gyroBiasX, 6);
+
+  lastMicros = micros();
+  Serial.println("Setup complete");
+}
+
+// ---------- 主迴圈 ----------
+void loop() {
+  unsigned long now = micros();
+  dt = (now - lastMicros) / 1000000.0f;
+  if (dt <= 0.0f) dt = 0.01f;
+  lastMicros = now;
+
+  float ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps;
+  readIMU(ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps);
+
+  // convert accel to m/s^2 (1 g = 9.80665 m/s^2)
+  float ax_m_s2 = (ax_g - accelBiasX) * 9.80665f;
+  float gx_corrected = gx_dps - gyroBiasX;
+
+  // complementary filter for X-axis tilt (使用 ay, az)
+  float accelAngleX = atan2(ay_g, az_g) * 57.2957795131f;  // deg
+  gyroAngleX += gx_corrected * dt;
+  compAngleX = alpha * (compAngleX + gx_corrected * dt) + (1.0f - alpha) * accelAngleX;
+
+  // velocity integration (示範，會累積誤差)
+  velX += ax_m_s2 * dt;
+
+
+  // tilt safety
+  if (abs(compAngleX) > TILT_THRESHOLD) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    digitalWrite(RELAY_PIN, HIGH);   // 放下輔助輪
+    analogWrite(MOTOR_PIN_A, 0);
+    analogWrite(MOTOR_PIN_B, 0);
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(RELAY_PIN, LOW);
+  }
+
+    // ---------- 顯示資料 ----------
+
+  // --- OLED 顯示 ---
+  display.clearDisplay();
+
+  // 顯示速度
+  display.setCursor(0, 0);
+  display.print("Vel: ");
+  display.print(velX, 2);
+  display.print(" m/s");
+
+  // 顯示傾斜角
+  display.setCursor(0, 10);
+  display.print("Angle: ");
+  display.print(compAngleX, 1);
+  display.print(" deg");
+
+
+  // 狀態條（進度條）— 以傾斜角度比例顯示
+  int barWidth = map(abs((int)compAngleX), 0, (int)TILT_THRESHOLD, 0, 120);
+  if (barWidth > 120) barWidth = 120;
+  display.fillRect(4, 40, barWidth, 10, SSD1306_WHITE); // 進度條
+  display.drawRect(4, 40, 120, 10, SSD1306_WHITE);      // 外框
+  display.display();
+
+
+  // --- LCD1602 顯示速度 ---
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Speed:");
+  lcd.setCursor(7, 0);
+  lcd.print(velX, 2);
+  lcd.print("m/s");
+
+  lcd.setCursor(0, 1);
+  if (abs(compAngleX) > TILT_THRESHOLD) {
+    lcd.print("TILT ALERT!");
+  } else {
+    lcd.print("Angle:");
+    lcd.print(compAngleX, 1);
+    lcd.print((char)223); // 度數符號 °
+  }
+
+  delay(100); // 小延遲（可視需要調整）
+}
