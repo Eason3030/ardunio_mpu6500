@@ -25,71 +25,80 @@ const int REMOTE_PIN = 3;
 const int HALL_SENSOR_PIN = 4;
 
 // ---------- IMU ----------
-const float dt = 0.01f;
-const float alpha = 0.98f;
-float compAngleX = 0.0f; 
-float gyroBiasX = 0.0f;
-float accelBiasX = 0.0f;
+const float dt = 0.01f;          // 資料更新週期（秒）。代表每 10ms 更新一次 IMU 數據。
+const float alpha = 0.98f;       // 互補濾波係數。98% 用陀螺儀角度，2% 用加速度角度校正。
+float compAngleX = 0.0f;         // 互補濾波後的最終角度（X 軸）
+float gyroBiasX = 0.0f;          // 陀螺儀在 X 軸的偏移值（校正時量到的誤差）
+float accelBiasX = 0.0f;         // 加速度計在 X 軸的偏移值（校正時量到的誤差）
 
 // ---------- 狀態 ----------
-bool wheelDown = false;
-unsigned long wheelAnimStartTime = 0;
-bool showWheelAnim = false;
-byte ctrlSrc = 0;  // 0=INIT, 1=HALL, 2=REMOTE
+bool wheelDown = false;          // 輔助輪目前是否為下降狀態（true=DOWN）
+unsigned long wheelAnimStartTime = 0; 
+bool showWheelAnim = false;      // 是否播放輔助輪動畫
+byte ctrlSrc = 0;                // 控制來源（0=初始化、1=霍爾感測器、2=紅外線遙控）
 
-int lastHallState = HIGH;
-int lastRemoteRead = LOW;
-unsigned long lastPrintTime = 0;
-unsigned long lastDisplayTime = 0;
+int lastHallState = HIGH;        // 上一次霍爾感測器的讀值
+int lastRemoteRead = LOW;        // 上一次紅外線讀值
+unsigned long lastPrintTime = 0; // 最後一次序列印出時間
+unsigned long lastDisplayTime = 0; // 最後一次更新顯示的時間
 
 // =====================================================================
 // MPU 基本讀取
 // =====================================================================
+
+// 從 MPU6050 讀取多個暫存器資料
 void mpuReadBytes(uint8_t reg, uint8_t count, uint8_t* dest) {
-  Wire.beginTransmission(MPU_6050);
-  Wire.write(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)MPU_6050, count);
-  for (uint8_t i = 0; i < count; i++) dest[i] = Wire.read();
+  Wire.beginTransmission(MPU_6050); // 開始與 MPU 通訊
+  Wire.write(reg);                  // 指定起始暫存器
+  Wire.endTransmission(false);      // 不釋放 I2C bus
+  Wire.requestFrom((uint8_t)MPU_6050, count); // 要求讀取 count 個 byte
+  for (uint8_t i = 0; i < count; i++) dest[i] = Wire.read(); // 放入 dest[]
 }
 
+// 讀取 16-bit 的感測器資料（高位元節 + 低位元節）
 int16_t read16(uint8_t reg) {
   uint8_t buf[2];
-  mpuReadBytes(reg, 2, buf);
-  return (int16_t)((buf[0] << 8) | buf[1]);
+  mpuReadBytes(reg, 2, buf);        // 從 reg 讀取兩個 byte
+  return (int16_t)((buf[0] << 8) | buf[1]); // 組合成 16-bit 數值
 }
 
+// 初始化 MPU6050
 void setupMPU() {
   Wire.beginTransmission(MPU_6050);
-  Wire.write(PWR_MGMT_1);
-  Wire.write(0x00);
+  Wire.write(PWR_MGMT_1); // 啟動管理暫存器
+  Wire.write(0x00);       // 設為 0 表示讓 MPU 從睡眠模式喚醒
   Wire.endTransmission();
-  delay(50);
+  delay(50);              // 等待感測器啟動
 }
 
+// 校正加速度計與陀螺儀偏移
 void calibrateIMU() {
   float sumAx = 0, sumGx = 0;
-  for (byte i = 0; i < 50; i++) {
-    sumAx += read16(ACCEL_XOUT_H) / 16384.0f;
-    sumGx += read16(GYRO_XOUT_H) / 131.0f;
+  for (byte i = 0; i < 50; i++) {  // 連續取 50 筆做平均
+    sumAx += read16(ACCEL_XOUT_H) / 16384.0f;  // 量加速度 X 軸（轉成 g）
+    sumGx += read16(GYRO_XOUT_H) / 131.0f;     // 量陀螺儀 X 軸（轉成 °/s）
     delay(5);
   }
-  accelBiasX = sumAx / 50;
-  gyroBiasX  = sumGx / 50;
+  accelBiasX = sumAx / 50;  // 加速度偏移（平均）
+  gyroBiasX  = sumGx / 50;  // 陀螺儀偏移（平均）
 }
 
+// 讀取 IMU 資料並計算 X 軸角度
 void readIMU(float &ax, float &gx) {
-  ax = read16(ACCEL_XOUT_H) / 16384.0f;
-  float az = read16(ACCEL_XOUT_H + 4) / 16384.0f;
-  gx = read16(GYRO_XOUT_H) / 131.0f;
-  
-  gx -= gyroBiasX;
-  ax -= accelBiasX;
-  
-  float accelAngle = atan2(ax, az) * 57.2958f;
-  compAngleX = alpha * (compAngleX + gx * dt) + (1 - alpha) * accelAngle;
-}
+  ax = read16(ACCEL_XOUT_H) / 16384.0f;             // 讀加速度 X 軸（單位：g）
+  float az = read16(ACCEL_XOUT_H + 4) / 16384.0f;   // 讀加速度 Z 軸（單位：g）
+  gx = read16(GYRO_XOUT_H) / 131.0f;                // 讀陀螺儀 X 軸（單位：°/s）
 
+  gx -= gyroBiasX;  // 扣掉校正值 → 減少漂移
+  ax -= accelBiasX; // 扣掉校正值 → 減少偏移
+
+  // 利用加速度計計算 tilt angle（使用 atan2，避免除以 0）
+  float accelAngle = atan2(ax, az) * 57.2958f; // 57.29... = 180/π（弧度轉角度）
+
+  // 互補濾波：融合加速度角度與陀螺儀角度
+  compAngleX = alpha * (compAngleX + gx * dt)   // 陀螺儀推算的角度（主）
+             + (1 - alpha) * accelAngle;        // 加速度角度做修正（輔）
+}
 // =====================================================================
 // 專業啟動畫面
 // =====================================================================
