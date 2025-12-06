@@ -1,22 +1,27 @@
-name: Arduino CI
+name: Arduino build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  compile:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Compile Arduino sketches
-        uses: arduino/compile-sketches@v1
-        with:
-          fqbn: "arduino:avr:uno"
-          sketch-paths: |
-            .
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2   # 讓 CI 環境安裝 Arduino CLI  [oai_citation:2‡GitHub](https://github.com/arduino/setup-arduino-cli?utm_source=chatgpt.com)
+
+      - name: Install AVR core for Uno
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+
+      - name: Compile sketch
+        # 假設你的主要 sketch 放在根目錄並叫做 main.ino，或放在例如 src/ 內
+        run: arduino-cli compile --fqbn arduino:avr:uno path/to/your/sketch_folder
