@@ -187,3 +187,4 @@ void loop() {
 
   delay(100);
 }
+//後來把LCD刪除了
