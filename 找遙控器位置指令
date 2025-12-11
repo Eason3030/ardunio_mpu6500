@@ -1,4 +1,4 @@
-#include <IRremote.h>//使用舊版本2.2開頭版本(重要!!)
+ #include <IRremote.h>//使用舊版本2.2開頭版本(重要!!)
 
 const int recv_pin = 3;  // IR 接收模組連接到的腳位
 IRrecv irrecv(recv_pin);
