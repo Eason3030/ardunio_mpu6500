@@ -41,8 +41,8 @@ const int HALL_SPEED_PIN = 2;
 // RGB LED 腳位定義
 // ============================================================================
 const int RGB_RED_PIN = 5;
-const int RGB_GREEN_PIN = 6;
-const int RGB_BLUE_PIN = 7;
+const int RGB_GREEN_PIN = 7;
+const int RGB_BLUE_PIN = 6;
 
 // 設定 RGB 類型：true = 共陽極（HIGH=滅），false = 共陰極（HIGH=亮）
 const bool RGB_COMMON_ANODE = false;
